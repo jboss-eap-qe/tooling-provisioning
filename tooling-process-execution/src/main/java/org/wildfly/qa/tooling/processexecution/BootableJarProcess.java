@@ -33,8 +33,8 @@ public class BootableJarProcess extends ServerProcess {
     public BootableJarProcess(final Path bootableJarPath, long timeout, TimeUnit timeUnit) {
         this(bootableJarPath, timeout, timeUnit, OnlineOptions.standalone()
                 .hostAndPort("localhost", 9990)
-                .bootTimeout(30000)
-                .connectionTimeout(30000)
+                .bootTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
+                .connectionTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
                 .build());
     }
 

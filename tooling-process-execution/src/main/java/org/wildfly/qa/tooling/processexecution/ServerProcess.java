@@ -54,8 +54,8 @@ public class ServerProcess {
     public ServerProcess(final CommandLine startScript, long timeout, TimeUnit timeUnit) {
         this(startScript, timeout, timeUnit, OnlineOptions.standalone()
                 .hostAndPort("localhost", 9990)
-                .bootTimeout(30000) // timeouts are needed for use-case with restart
-                .connectionTimeout(30000)
+                .bootTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis()) // timeouts are needed for use-case with restart
+                .connectionTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
                 .build());
     }
 
@@ -107,8 +107,8 @@ public class ServerProcess {
                     if (line.contains(lineMatch)) {
                         try (OnlineManagementClient client = ManagementClient.online(OnlineOptions.standalone()
                                 .hostAndPort("localhost", 9990)
-                                .bootTimeout(30000) // timeouts are needed for use-case with restart
-                                .connectionTimeout(30000)
+                                .bootTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis()) // timeouts are needed for use-case with restart
+                                .connectionTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
                                 .build())) {
                             runnable.run(client);
                         } catch (IOException | OperationException | InterruptedException e) {
