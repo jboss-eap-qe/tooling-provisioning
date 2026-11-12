@@ -40,7 +40,9 @@ Each step offers only what makes sense after it, so an invalid combination does 
 SbomVerifier(root, sbomFile, excludedScanPaths)
  ├─ withoutSbom()                       -> verify()
  └─ withSbom()                          -> withBomCheck(predicate, message)*
+                                           withBundledSbomCheck(groupId, artifactId, path, predicate, message)*
                                            withSchemaValidation()
+                                           withGzipCheck()
      ├─ verify()
      ├─ withoutManifest()               -> withDiskChecks() | verify()
      └─ withManifest()                  -> withManifestCheck(predicate, message)*
@@ -78,7 +80,7 @@ Each step adds an implicit check when you leave it (move to the next step or cal
 
 | `withSbom()`
 | The SBOM exists and is valid CycloneDX JSON, plain or gzipped (`SBOM`)
-| `withBomCheck(Predicate<Bom>, message)`, `withSchemaValidation()` (see below)
+| `withBomCheck(Predicate<Bom>, message)`, `withBundledSbomCheck(groupId, artifactId, path, Predicate<Component>, message)` (`Bundled SBOM`, see below), `withSchemaValidation()` (see below), `withGzipCheck()` (see below)
 
 | `withoutManifest()`
 | No `.installation/manifest.yaml` (`Manifest`)
@@ -111,8 +113,6 @@ SBOM
   /components/0/components/0/evidence/identity/0/methods/0: required property 'confidence' not found
   ...
 ----
-
-Schema validation on a bootable JAR (`BootableJarSbomVerifier.withSbom().withSchemaValidation()`) applies to the SBOM of the bootable JAR only. Ask for it again on the `withSbom()` step of the extracted WildFly if you want that SBOM validated too.
 
 === What the disk checks do
 
@@ -165,6 +165,34 @@ A WildFly distribution legitimately ships some shaded artifacts that the manifes
 
 An artifact is *untracked* when no JAR of its name is on disk and the manifest has no stream for it, or has a stream with another version. If the installation has no manifest (`withoutManifest()`), none of them is tracked.
 
+=== Compressed SBOM
+
+`withGzipCheck()` on `withSbom()` requires the SBOM file to be gzip-compressed. It is decided from the content, not from the file name: the file must start with the gzip magic bytes and be readable to the end, which also verifies the CRC32 and the length in the trailer, like `gzip -t`. A file that is not gzipped, for example plain JSON, and a corrupt or truncated file fail this check under `SBOM` with the cause, for example `... is not a valid gzip file: Not in GZIP format`. It is off by default, because the SBOM may be plain.
+
+=== SBOM embedded in a JAR
+
+Some JARs carry an SBOM of their own for what they bundle. The HAL console (`org.jboss.hal:hal-console`) bundles its npm packages as JavaScript that is not on disk by itself, so they cannot be compared with the installation, and the bundled JavaScript carries no versions to verify against. The top-level SBOM declares them as `pkg:npm/<module name>@<version>` components nested under the Maven component of the JAR, and the JAR embeds the same list in `META-INF/sbom/npm-bom.cdx.json`. Because only some distributions ship such a JAR, the check is opt-in on `withSbom()`, and what the components must look like is up to the caller. The tooling knows nothing about npm; the format is a predicate that the test suite supplies:
+
+[,java]
+----
+Pattern npmPurl = Pattern.compile("pkg:npm/(?:%40[^/@?#]+/)?[^/@?#]+@[^/@?#]+(?:[?#].*)?");
+
+.withSbom()
+    .withBundledSbomCheck("org.jboss.hal", "hal-console", "META-INF/sbom/npm-bom.cdx.json",
+            c -> c.purl() != null && npmPurl.matcher(c.purl()).matches(),
+            "is not pkg:npm/<module name>@<version>")
+.withManifest().withDiskChecks().verify();
+----
+
+The JAR is found by the location that the top-level SBOM declares for the Maven component. The check fails, under `Bundled SBOM`, with each issue starting `[groupId:artifactId]`, when:
+
+* the SBOM has no such component, or it declares no location;
+* the JAR is not on disk, has no entry at the given path, or the entry is not a readable SBOM. A missing embedded SBOM is a failure, not a skipped check;
+* the components nested under the Maven component and the components of the embedded SBOM differ. They are compared one to one by purl: a purl that is declared twice needs two components in the embedded SBOM, and the other way round. The real HAL console lists `moment-timezone` and `string_decoder` twice in both;
+* the predicate returns `false` for a component of either SBOM, or throws. In the example the `@` of a scope is encoded as `%40`.
+
+It can be called for several JARs.
+
 == Verifying a bootable JAR
 
 A bootable JAR has two levels: its own SBOM in `META-INF/sbom/` and the WildFly installation packaged in `wildfly.zip`. Pass the *extracted* bootable JAR (the directory that contains `META-INF/` and `wildfly.zip`):
@@ -184,7 +212,8 @@ List<CheckResult> results = new BootableJarSbomVerifier(bootableRoot, Path.of("M
 ----
 
 * The SBOM path of the bootable JAR is relative to `bootableRoot` (or absolute), and is gunzipped when it ends in `.gz`. The outer root is `META-INF/sbom`. It is not an installation, so the base check is that it has *no* `.installation/manifest.yaml`.
-* `withSbom()` offers `withBomCheck(...)`, `withSchemaValidation()`, `withExtractedWildflyZipSbomVerifier(sbomFile, excludedScanPaths)` and `verify()`. The verifier returned by `withExtractedWildflyZipSbomVerifier(...)` is the `SbomVerifier` chain described above, applied to the installation inside `wildfly.zip`; its results follow those of the outer level.
+* `withSbom()` offers `withBomCheck(...)`, `withBundledSbomCheck(...)`, `withSchemaValidation()`, `withGzipCheck()`, `withExtractedWildflyZipSbomVerifier(sbomFile, excludedScanPaths)` and `verify()`. The verifier returned by `withExtractedWildflyZipSbomVerifier(...)` is the `SbomVerifier` chain described above, applied to the installation inside `wildfly.zip`; its results follow those of the outer level.
+* The checks of `withSbom()` (`withBomCheck`, `withSchemaValidation`, `withGzipCheck` and `withBundledSbomCheck`) apply to the SBOM of the level they are called on. Both levels offer them: call them on the `withSbom()` of the bootable JAR for its SBOM, and on the `withSbom()` after `withExtractedWildflyZipSbomVerifier(...)` for the SBOM of `wildfly.zip`. For the bootable JAR, a location that `withBundledSbomCheck` finds in the SBOM is relative to `META-INF/sbom`.
 * `withoutSbom()` offers only `verify()`. Without an outer SBOM there is nothing to verify `wildfly.zip` against, so the chain ends there.
 * `wildfly.zip` is extracted to a temporary directory when `verify()` runs and the directory is deleted afterwards, also when a check fails. Zip entries that would escape the directory are rejected. If `wildfly.zip` is missing or cannot be extracted, the `wildfly.zip` check fails once and the checks that need the installation report `not checked`.
 * A chain that extracts `wildfly.zip` can be verified once. Create a new verifier to verify again.
