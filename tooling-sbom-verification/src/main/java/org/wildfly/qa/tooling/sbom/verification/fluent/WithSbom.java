@@ -6,6 +6,7 @@ package org.wildfly.qa.tooling.sbom.verification.fluent;
 
 import org.cyclonedx.exception.ParseException;
 import org.cyclonedx.model.Bom;
+import org.wildfly.qa.tooling.sbom.component.Component;
 import org.wildfly.qa.tooling.sbom.result.CheckCategory;
 import org.wildfly.qa.tooling.sbom.result.CheckResult;
 import org.wildfly.qa.tooling.sbom.verification.Context;
@@ -52,6 +53,48 @@ public final class WithSbom {
         Objects.requireNonNull(predicate, "predicate");
         Objects.requireNonNull(errorMessage, "errorMessage");
         checks.add(() -> checkBom(predicate, errorMessage));
+        return this;
+    }
+
+    /**
+     * Adds a check of an SBOM that a JAR embeds. Some JARs carry their own SBOM for what they bundle, for
+     * example the HAL console ({@code org.jboss.hal:hal-console}), whose npm packages are bundled JavaScript
+     * that is not on disk by itself. The top-level SBOM declares those packages as components nested under
+     * the Maven component of the JAR. The check fails when:
+     * <ul>
+     *   <li>the SBOM has no Maven component with that group and artifact, or it declares no location;</li>
+     *   <li>the JAR is not on disk, or has no entry at {@code embeddedSbomPath}, or the entry is not a
+     *       readable SBOM (this is a failure, not a skipped check);</li>
+     *   <li>the components nested under the Maven component and the components of the embedded SBOM are not
+     *       the same, compared one to one by purl: a purl that is declared twice needs two components in the
+     *       embedded SBOM, and the other way round;</li>
+     *   <li>{@code componentCheck} returns {@code false} for a component of either SBOM. A check that throws
+     *       counts as {@code false}.</li>
+     * </ul>
+     * Each issue starts with {@code [groupId:artifactId]}.
+     *
+     * <p>The JAR is found by the location the SBOM declares, relative to the root of this verification. The
+     * condition is the caller's: the tooling knows nothing about npm or any other kind of component. This is
+     * opt-in, because only some distributions ship such a JAR. If the SBOM is unavailable the check fails as
+     * "not checked". Can be called for any number of JARs.</p>
+     *
+     * @param groupId          the Maven group of the component, e.g. {@code org.jboss.hal}
+     * @param artifactId       the Maven artifactId of the component, e.g. {@code hal-console}
+     * @param embeddedSbomPath the path of the SBOM inside the JAR, e.g. {@code META-INF/sbom/npm-bom.cdx.json};
+     *                         gunzipped when it ends in {@code .gz}
+     * @param componentCheck   the condition every component must meet, for example "the purl is {@code pkg:npm/<module name>@<version>}"
+     * @param errorMessage     what is reported for a component that does not meet it
+     * @return this stage
+     */
+    public WithSbom withBundledSbomCheck(String groupId, String artifactId, String embeddedSbomPath,
+                                               Predicate<Component> componentCheck, String errorMessage) {
+        Objects.requireNonNull(groupId, "groupId");
+        Objects.requireNonNull(artifactId, "artifactId");
+        Objects.requireNonNull(embeddedSbomPath, "embeddedSbomPath");
+        Objects.requireNonNull(componentCheck, "componentCheck");
+        Objects.requireNonNull(errorMessage, "errorMessage");
+        checks.add(new BundledSbomCheck(context, groupId, artifactId, embeddedSbomPath, componentCheck,
+                errorMessage)::run);
         return this;
     }
 

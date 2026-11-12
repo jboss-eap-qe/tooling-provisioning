@@ -6,7 +6,8 @@ package org.wildfly.qa.tooling.sbom.result;
 
 /**
  * What a {@link CheckResult} is about. The set is closed: the checks that take a user-supplied condition
- * report under the category of what they look at ({@link #SBOM}, {@link #MANIFEST}, {@link #SHADED}).
+ * report under the category of what they look at ({@link #SBOM}, {@link #MANIFEST}, {@link #SHADED},
+ * {@link #BUNDLED_SBOM}).
  * {@link #toString()} is the short, stable label used in reports.
  */
 public enum CheckCategory {
@@ -33,7 +34,13 @@ public enum CheckCategory {
     SBOM_VS_MANIFEST("SBOM vs manifest"),
 
     /** Whether the shaded (POM-derived) artifacts of the SBOM meet a user-supplied expectation. */
-    SHADED("Shaded artifacts");
+    SHADED("Shaded artifacts"),
+
+    /**
+     * Whether the SBOM embedded in a JAR (e.g. the npm SBOM of the HAL console) agrees with the components
+     * the top-level SBOM nests under that JAR, and its components have the expected format.
+     */
+    BUNDLED_SBOM("Bundled SBOM");
 
     private final String label;
 

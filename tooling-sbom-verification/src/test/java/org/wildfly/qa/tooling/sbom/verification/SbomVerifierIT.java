@@ -6,6 +6,7 @@ package org.wildfly.qa.tooling.sbom.verification;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.wildfly.qa.tooling.sbom.component.Component;
 import org.wildfly.qa.tooling.sbom.result.CheckCategory;
 import org.wildfly.qa.tooling.sbom.result.CheckResult;
 import org.wildfly.qa.tooling.sbom.result.ShadedResult;
@@ -17,10 +18,13 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -646,6 +650,239 @@ class SbomVerifierIT {
         assertEquals(1, failed.issues().size(), failed.toString());
         assertTrue(failed.issues().get(0).contains("type=txt") && failed.issues().get(0).contains("version.txt"),
                 failed.toString());
+    }
+
+    // ---- SBOM embedded in a JAR ------------------------------------------------------
+
+    private static final String HAL_JAR = "hal-console-3.7.22.Final-resources.jar";
+    private static final String NPM_BOM = "META-INF/sbom/npm-bom.cdx.json";
+
+    /** What a test suite decides, not the tooling: {@code pkg:npm/<module name>@<version>}, a scope encoded as {@code %40}. */
+    private static final Pattern NPM_PURL =
+            Pattern.compile("pkg:npm/(?:%40[^/@?#]+/)?[^/@?#]+@[^/@?#]+(?:[?#].*)?");
+    private static final Predicate<Component> NPM_PURL_FORMAT =
+            c -> c.purl() != null && NPM_PURL.matcher(c.purl()).matches();
+    private static final String NPM_PURL_MESSAGE = "is not pkg:npm/<module name>@<version>";
+
+    private static String components(String... purls) {
+        return Arrays.stream(purls)
+                .map(p -> "{\"type\":\"library\",\"name\":\"n\",\"version\":\"1\",\"purl\":\"" + p + "\"}")
+                .collect(Collectors.joining(","));
+    }
+
+    private static String bom(String... purls) {
+        return "{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.6\",\"version\":1,\"components\":["
+                + components(purls) + "]}";
+    }
+
+    /** The top-level SBOM: the HAL console with the given components nested under it. */
+    private static String topLevelBom(String... nestedPurls) {
+        return "{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.6\",\"version\":1,\"components\":["
+                + "{\"type\":\"library\",\"group\":\"org.jboss.hal\",\"name\":\"hal-console\",\"version\":\"3.7.22.Final\","
+                + "\"purl\":\"pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources\","
+                + "\"evidence\":{\"occurrences\":[{\"location\":\"" + HAL_JAR + "\"}]},"
+                + "\"components\":[" + components(nestedPurls) + "]}]}";
+    }
+
+    private static void writeJar(Path root, String embeddedEntry, String embeddedContent) throws IOException {
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(
+                Files.newOutputStream(root.resolve(HAL_JAR)))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("index.html"));
+            zip.write("<html/>".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+            if (embeddedEntry != null) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(embeddedEntry));
+                zip.write(embeddedContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
+    }
+
+    /** Verifies the HAL console with the npm SBOM embedded in the JAR. */
+    private static List<CheckResult> verifyHal(Path root, String topLevel, String embeddedEntry,
+                                               String embeddedContent) throws IOException {
+        writeJar(root, embeddedEntry, embeddedContent);
+        Files.writeString(root.resolve("sbom.cdx.json"), topLevel);
+        return new SbomVerifier(root, Path.of("sbom.cdx.json"), InstallationScanner.DEFAULT_EXCLUDED)
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM, NPM_PURL_FORMAT, NPM_PURL_MESSAGE)
+                .withoutManifest().withDiskChecks()
+                .verify();
+    }
+
+    private static List<CheckResult> verifyHal(Path root, String topLevel, String embeddedContent) throws IOException {
+        return verifyHal(root, topLevel, NPM_BOM, embeddedContent);
+    }
+
+    private static CheckResult bundledSbomFailure(List<CheckResult> results) {
+        CheckResult failed = onlyFailure(results);
+        assertEquals(CheckCategory.BUNDLED_SBOM, failed.category());
+        return failed;
+    }
+
+    @Test
+    void anEmbeddedSbomIsNotACheckUnlessAskedFor() {
+        List<CheckResult> results = verifier().withSbom().withManifest().withDiskChecks().verify();
+
+        assertFalse(results.stream().anyMatch(r -> CheckCategory.BUNDLED_SBOM.equals(r.category())), results.toString());
+    }
+
+    @Test
+    void halConsoleOfTheDistributionMatchesItsEmbeddedNpmSbom() {
+        List<CheckResult> results = verifier()
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM, NPM_PURL_FORMAT, NPM_PURL_MESSAGE)
+                .withManifest().withDiskChecks()
+                .verify();
+
+        assertAllPassed(results);
+        assertTrue(results.stream().anyMatch(r -> CheckCategory.BUNDLED_SBOM.equals(r.category())), results.toString());
+    }
+
+    @Test
+    void matchingEmbeddedSbomPasses(@TempDir Path root) throws IOException {
+        assertAllPassed(verifyHal(root,
+                topLevelBom("pkg:npm/lodash@4.17.21", "pkg:npm/%40types/d3@5.16.0"),
+                bom("pkg:npm/%40types/d3@5.16.0", "pkg:npm/lodash@4.17.21")));
+    }
+
+    @Test
+    void aComponentOnlyInTheTopLevelSbomIsReported(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root,
+                topLevelBom("pkg:npm/lodash@4.17.21", "pkg:npm/extra@1.0.0"), bom("pkg:npm/lodash@4.17.21")));
+
+        assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/extra@1.0.0 [declared under "
+                + "pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources, missing from "
+                + NPM_BOM + " of " + HAL_JAR + "]"), failed.issues());
+    }
+
+    @Test
+    void aComponentOnlyInTheEmbeddedSbomIsReported(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root,
+                topLevelBom("pkg:npm/lodash@4.17.21"), bom("pkg:npm/lodash@4.17.21", "pkg:npm/extra@1.0.0")));
+
+        assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/extra@1.0.0 [in " + NPM_BOM + " of " + HAL_JAR
+                + ", not declared under pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources]"),
+                failed.issues());
+    }
+
+    @Test
+    void aVersionMismatchIsReportedInBothDirections(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root,
+                topLevelBom("pkg:npm/lodash@4.17.21"), bom("pkg:npm/lodash@4.17.20")));
+
+        assertEquals(2, failed.issues().size(), failed.toString());
+    }
+
+    @Test
+    void duplicatesAreComparedOneToOne(@TempDir Path root) throws IOException {
+        assertAllPassed(verifyHal(root,
+                topLevelBom("pkg:npm/a@1", "pkg:npm/a@1"), bom("pkg:npm/a@1", "pkg:npm/a@1")));
+    }
+
+    @Test
+    void aDuplicateInOnlyOneSbomIsReported(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root,
+                topLevelBom("pkg:npm/a@1", "pkg:npm/a@1"), bom("pkg:npm/a@1")));
+
+        assertEquals(1, failed.issues().size(), failed.toString());
+        assertTrue(failed.issues().get(0).contains("pkg:npm/a@1 [declared under"), failed.toString());
+    }
+
+    @Test
+    void aMissingEmbeddedSbomFails(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root, topLevelBom("pkg:npm/lodash@4.17.21"), null, null));
+
+        assertEquals(List.of("[org.jboss.hal:hal-console] " + HAL_JAR + " [no embedded SBOM at " + NPM_BOM + "]"),
+                failed.issues());
+    }
+
+    @Test
+    void anUnreadableEmbeddedSbomFails(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root, topLevelBom("pkg:npm/lodash@4.17.21"), "not json"));
+
+        assertEquals(1, failed.issues().size(), failed.toString());
+        assertTrue(failed.issues().get(0).contains(NPM_BOM + " cannot be read"), failed.toString());
+    }
+
+    @Test
+    void aMissingJarFails(@TempDir Path root) throws IOException {
+        Files.writeString(root.resolve("sbom.cdx.json"), topLevelBom("pkg:npm/lodash@4.17.21"));
+
+        CheckResult failed = bundledSbomFailure(new SbomVerifier(root, Path.of("sbom.cdx.json"),
+                InstallationScanner.DEFAULT_EXCLUDED)
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM, c -> true, "unused")
+                .withoutManifest().withDiskChecks()
+                .verify().stream().filter(r -> r.category() == CheckCategory.BUNDLED_SBOM).toList());
+
+        assertTrue(failed.issues().get(0).contains("JAR not found"), failed.toString());
+    }
+
+    @Test
+    void aMissingBundlingComponentFails(@TempDir Path root) throws IOException {
+        Files.writeString(root.resolve("sbom.cdx.json"), bom("pkg:npm/lodash@4.17.21"));
+
+        List<CheckResult> results = new SbomVerifier(root, Path.of("sbom.cdx.json"),
+                InstallationScanner.DEFAULT_EXCLUDED)
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM, c -> true, "unused")
+                .withoutManifest().withDiskChecks()
+                .verify();
+
+        assertEquals(List.of("[org.jboss.hal:hal-console] no such component in the SBOM"),
+                issuesOf(results, CheckCategory.BUNDLED_SBOM));
+    }
+
+    @Test
+    void aComponentThatFailsTheConditionIsReportedForBothSboms(@TempDir Path root) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyHal(root,
+                topLevelBom("pkg:npm/lodash"), bom("pkg:npm/lodash")));
+
+        assertEquals(List.of(
+                "[org.jboss.hal:hal-console] pkg:npm/lodash [" + NPM_PURL_MESSAGE + " in the SBOM]",
+                "[org.jboss.hal:hal-console] pkg:npm/lodash [" + NPM_PURL_MESSAGE + " in " + NPM_BOM + "]"),
+                failed.issues());
+    }
+
+    @Test
+    void theConditionIsTheCallersToDecide(@TempDir Path root) throws IOException {
+        writeJar(root, NPM_BOM, bom("pkg:npm/a@1"));
+        Files.writeString(root.resolve("sbom.cdx.json"), topLevelBom("pkg:npm/a@1"));
+
+        List<CheckResult> results = new SbomVerifier(root, Path.of("sbom.cdx.json"),
+                InstallationScanner.DEFAULT_EXCLUDED)
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM,
+                        c -> { throw new IllegalStateException("boom"); }, "check failed")
+                .withoutManifest().withDiskChecks()
+                .verify();
+
+        assertEquals(2, issuesOf(results, CheckCategory.BUNDLED_SBOM).size());
+        assertTrue(issuesOf(results, CheckCategory.BUNDLED_SBOM).get(0).contains("(the check threw IllegalStateException)"));
+    }
+
+    /** A bootable JAR: the SBOM is in META-INF/sbom, and a declared location is relative to that directory. */
+    private static List<CheckResult> verifyBootableJar(Path bootableRoot, String embeddedContent) throws IOException {
+        Path sbomDir = Files.createDirectories(bootableRoot.resolve("META-INF").resolve("sbom"));
+        writeJar(sbomDir, NPM_BOM, embeddedContent);
+        Files.writeString(sbomDir.resolve("sbom.cdx.json"), topLevelBom("pkg:npm/lodash@4.17.21"));
+        return new BootableJarSbomVerifier(bootableRoot, Path.of("META-INF/sbom/sbom.cdx.json"))
+                .withSbom()
+                .withBundledSbomCheck("org.jboss.hal", "hal-console", NPM_BOM, NPM_PURL_FORMAT, NPM_PURL_MESSAGE)
+                .verify();
+    }
+
+    @Test
+    void aBootableJarChecksItsEmbeddedSbom(@TempDir Path bootableRoot) throws IOException {
+        assertAllPassed(verifyBootableJar(bootableRoot, bom("pkg:npm/lodash@4.17.21")));
+    }
+
+    @Test
+    void aBootableJarReportsAnEmbeddedSbomThatDiffers(@TempDir Path bootableRoot) throws IOException {
+        CheckResult failed = bundledSbomFailure(verifyBootableJar(bootableRoot, bom("pkg:npm/lodash@4.17.20")));
+
+        assertEquals(2, failed.issues().size(), failed.toString());
     }
 
     // ---- helpers ---------------------------------------------------------------

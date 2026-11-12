@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.wildfly.qa.tooling.sbom.result.CheckCategory.BUNDLED_SBOM;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.DISK_VS_SBOM;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.INSTALLED_JARS;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.MANIFEST;
@@ -148,6 +149,14 @@ public final class CheckResults {
      */
     public static CheckResult shadedCheckFailed(String message) {
         return new CheckResult(SHADED, List.of(message));
+    }
+
+    /**
+     * @return a {@link CheckCategory#BUNDLED_SBOM} result with one issue per problem found with an embedded
+     *         SBOM; passed when the list is empty
+     */
+    public static CheckResult bundledSbom(List<String> issues) {
+        return new CheckResult(BUNDLED_SBOM, issues);
     }
 
     /**
