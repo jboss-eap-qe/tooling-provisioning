@@ -20,8 +20,8 @@ public class DomainServerProcess extends ServerProcess {
      */
     public DomainServerProcess(final CommandLine startScript, long timeout, TimeUnit timeUnit, int port, String domainHostName) {
         super(startScript, timeout, timeUnit, OnlineOptions.domain().forHost(domainHostName).forProfile("default").build().hostAndPort("localhost", port)
-                .bootTimeout(30000)
-                .connectionTimeout(30000)
+                .bootTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
+                .connectionTimeout(ProcessExecutionProperties.serverManagementTimeoutMillis())
                 .build());
     }
 

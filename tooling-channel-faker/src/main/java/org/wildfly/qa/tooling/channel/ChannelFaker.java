@@ -1,7 +1,11 @@
 package org.wildfly.qa.tooling.channel;
 
+import org.wildfly.channel.Channel;
+import org.wildfly.channel.ChannelMapper;
 import org.wildfly.channel.MavenCoordinate;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.file.Path;
@@ -78,19 +82,21 @@ public class ChannelFaker {
      * @return yaml of fake channel
      */
     public String composeChannelYaml(boolean composeManifestVersion) {
-        //TODO maybe use channel lib?
-        return "schemaVersion: \"2.0.0\"\n" +
-                "name: \"" + fakeChannelName + "\"\n" +
-                "repositories:\n" +
-                "  - id: \"" + fakeChannelRepoName + "\"\n" +
+        final Channel.Builder channelBuilder = new Channel.Builder()
+                .setName(fakeChannelName)
                 // file URI must use single slash per https://datatracker.ietf.org/doc/rfc8089/
-                "    url: \"" + repoUri.toString().replaceAll("file:///", "file:/") + "\"\n" +
-                "manifest:\n" +
-                "  maven:\n" +
-                "    groupId: \"" + fakeChannelMavenCoord.getGroupId() + "\"\n" +
-                "    artifactId: \"" + fakeChannelMavenCoord.getArtifactId() + "\"\n" +
-                (composeManifestVersion ? "    version: \"" + fakeChannelMavenCoord.getVersion() + "\"\n" : "") +
-                "resolve-if-no-stream: \"none\"\n";
+                .addRepository(fakeChannelRepoName, repoUri.toString().replaceAll("file:///", "file:/"))
+                .setResolveStrategy(Channel.NoStreamStrategy.NONE);
+        if (composeManifestVersion) {
+            channelBuilder.setManifestCoordinate(fakeChannelMavenCoord.getGroupId(), fakeChannelMavenCoord.getArtifactId(), fakeChannelMavenCoord.getVersion());
+        } else {
+            channelBuilder.setManifestCoordinate(fakeChannelMavenCoord.getGroupId(), fakeChannelMavenCoord.getArtifactId());
+        }
+        try {
+            return ChannelMapper.toYaml(channelBuilder.build());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /**
