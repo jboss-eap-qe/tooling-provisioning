@@ -13,6 +13,10 @@ import org.wildfly.qa.tooling.sbom.verification.Context;
 import org.wildfly.qa.tooling.sbom.verification.Lazy;
 import org.wildfly.qa.tooling.sbom.result.CheckResults;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +24,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.zip.GZIPInputStream;
 
 /**
  * An installation that is expected to have a valid SBOM. Further conditions on the parsed SBOM can be added
@@ -111,6 +116,20 @@ public final class WithSbom {
         return this;
     }
 
+    /**
+     * Also requires the SBOM file to be compressed: a complete, intact gzip stream. This is decided from the
+     * content, not from the file name: the file must start with the gzip magic bytes and be readable to the
+     * end, which also checks the CRC32 and the length stored in the trailer, like {@code gzip -t}. A plain
+     * JSON file called {@code .gz}, a truncated or corrupt file all fail with the cause. Off by default: the
+     * SBOM may be plain. A file that does not exist fails as the SBOM check does.
+     *
+     * @return this stage
+     */
+    public WithSbom withGzipCheck() {
+        checks.add(this::checkGzip);
+        return this;
+    }
+
     /** Expects the installation to have a valid manifest. */
     public WithManifest withManifest() {
         return new WithManifest(context, stack());
@@ -160,22 +179,35 @@ public final class WithSbom {
                 });
     }
 
+    /** Fails if the SBOM file is missing, or is not a complete gzip stream; the SBOM itself is not parsed. */
+    private CheckResult checkGzip() {
+        Optional<Path> file = context.sbomFile();
+        if (file.isEmpty()) {
+            return CheckResults.sbomMissing(context.sbomPath());
+        }
+        try (InputStream in = new GZIPInputStream(Files.newInputStream(file.get()))) {
+            in.transferTo(OutputStream.nullOutputStream());
+        } catch (IOException e) {
+            return CheckResults.sbomNotGzip(file.get(), e.getMessage() != null ? e.getMessage()
+                    : e.getClass().getSimpleName());
+        }
+        return CheckResults.passed(CheckCategory.SBOM);
+    }
+
     /** Fails like {@link #checkSbomValid()}, or if the predicate rejects the SBOM. */
     private CheckResult checkBom(Predicate<Bom> predicate, String errorMessage) {
         Optional<CheckResult> failure = sbomFailure();
         if (failure.isPresent()) {
             return failure.get();
         }
-        boolean accepted;
         try {
-            accepted = predicate.test(context.bom().get().orElseThrow());
+            return predicate.test(context.bom().get().orElseThrow())
+                    ? CheckResults.passed(CheckCategory.SBOM)
+                    : CheckResults.sbomCheckFailed(errorMessage);
         } catch (RuntimeException e) {
             return CheckResults.sbomCheckFailed(errorMessage + " (the check threw "
                     + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
         }
-        return accepted
-                ? CheckResults.passed(CheckCategory.SBOM)
-                : CheckResults.sbomCheckFailed(errorMessage);
     }
 
     /** @return why the SBOM is not usable, or empty when it exists and parses */

@@ -66,6 +66,18 @@ public final class BootableJarWithSbom {
     }
 
     /**
+     * Also requires the SBOM file of the bootable JAR to be a complete gzip stream; see
+     * {@link WithSbom#withGzipCheck()}. It does not apply to the SBOM of the extracted WildFly; ask for it on
+     * that stage.
+     *
+     * @return this stage
+     */
+    public BootableJarWithSbom withGzipCheck() {
+        sbom.withGzipCheck();
+        return this;
+    }
+
+    /**
      * Continues with the WildFly installation in {@code wildfly.zip}, extracted when {@code verify()} runs.
      *
      * @param sbomFile          where the SBOM is in the extracted installation, relative to its root; see

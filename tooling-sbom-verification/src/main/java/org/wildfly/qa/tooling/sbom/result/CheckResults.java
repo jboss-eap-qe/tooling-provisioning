@@ -65,6 +65,14 @@ public final class CheckResults {
     }
 
     /**
+     * @return a failed {@link CheckCategory#SBOM} result: the SBOM file is not a complete, intact gzip
+     *         stream, whatever its name says.
+     */
+    public static CheckResult sbomNotGzip(Path sbomFile, String cause) {
+        return new CheckResult(SBOM, List.of(sbomFile + " is not a valid gzip file: " + cause));
+    }
+
+    /**
      * @return a failed {@link CheckCategory#SBOM} result with the given message, e.g. a failed user-supplied
      *         check.
      */

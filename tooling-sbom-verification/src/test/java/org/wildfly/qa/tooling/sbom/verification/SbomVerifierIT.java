@@ -885,6 +885,121 @@ class SbomVerifierIT {
         assertEquals(2, failed.issues().size(), failed.toString());
     }
 
+    // ---- gzip ----------------------------------------------------------------
+
+    private static final String PLAIN_BOM = bom("pkg:npm/lodash@4.17.21");
+
+    private static byte[] gzip(String content) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(out)) {
+            gz.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return out.toByteArray();
+    }
+
+    private static List<CheckResult> verifyGzip(Path root, String fileName, byte[] content) throws IOException {
+        Files.write(root.resolve(fileName), content);
+        return new SbomVerifier(root, Path.of(fileName), InstallationScanner.DEFAULT_EXCLUDED)
+                .withSbom().withGzipCheck().verify();
+    }
+
+    private static List<String> gzipIssues(List<CheckResult> results) {
+        return results.stream().flatMap(r -> r.issues().stream()).filter(i -> i.contains("is not a valid gzip file")).toList();
+    }
+
+    @Test
+    void theSbomOfTheDistributionIsGzipped() {
+        List<CheckResult> results = verifier().withSbom().withGzipCheck().verify();
+
+        assertAllPassed(results);
+        assertEquals(3, results.size(), "installed JARs, the gzip check and the implicit SBOM check: " + results);
+    }
+
+    @Test
+    void gzipIsNotACheckUnlessAskedFor(@TempDir Path root) throws IOException {
+        Files.writeString(root.resolve("sbom.cdx.json"), PLAIN_BOM);
+
+        List<CheckResult> results = new SbomVerifier(root, Path.of("sbom.cdx.json"),
+                InstallationScanner.DEFAULT_EXCLUDED).withSbom().verify();
+
+        assertAllPassed(results);
+        assertEquals(2, results.size(), "installed JARs and the implicit SBOM check only: " + results);
+    }
+
+    @Test
+    void aGzippedSbomPasses(@TempDir Path root) throws IOException {
+        assertAllPassed(verifyGzip(root, "sbom.cdx.json.gz", gzip(PLAIN_BOM)));
+    }
+
+    @Test
+    void aPlainSbomCalledGzFails(@TempDir Path root) throws IOException {
+        List<CheckResult> results = verifyGzip(root, "sbom.cdx.json.gz", PLAIN_BOM.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        assertEquals(1, gzipIssues(results).size(), results.toString());
+        assertTrue(gzipIssues(results).get(0).contains("Not in GZIP format"), results.toString());
+    }
+
+    @Test
+    void aGzippedSbomIsRecognisedWhateverItIsCalled(@TempDir Path root) throws IOException {
+        List<CheckResult> results = verifyGzip(root, "sbom.cdx.json", gzip(PLAIN_BOM));
+
+        assertEquals(List.of(), gzipIssues(results), results.toString());
+    }
+
+    @Test
+    void aTruncatedGzipFails(@TempDir Path root) throws IOException {
+        byte[] whole = gzip(PLAIN_BOM);
+        List<CheckResult> results = verifyGzip(root, "sbom.cdx.json.gz", java.util.Arrays.copyOf(whole, whole.length - 10));
+
+        assertEquals(1, gzipIssues(results).size(), results.toString());
+    }
+
+    @Test
+    void aGzipWithACorruptTrailerFails(@TempDir Path root) throws IOException {
+        byte[] whole = gzip(PLAIN_BOM);
+        whole[whole.length - 6] ^= 0x55; // inside the CRC32 of the trailer
+        List<CheckResult> results = verifyGzip(root, "sbom.cdx.json.gz", whole);
+
+        assertEquals(1, gzipIssues(results).size(), results.toString());
+        assertTrue(gzipIssues(results).get(0).contains("Corrupt GZIP trailer"), results.toString());
+    }
+
+    @Test
+    void anEmptyFileIsNotGzip(@TempDir Path root) throws IOException {
+        assertEquals(1, gzipIssues(verifyGzip(root, "sbom.cdx.json.gz", new byte[0])).size());
+    }
+
+    @Test
+    void aMissingSbomFailsTheGzipCheckLikeTheSbomCheck(@TempDir Path root) {
+        List<CheckResult> results = new SbomVerifier(root, Path.of("sbom.cdx.json.gz"),
+                InstallationScanner.DEFAULT_EXCLUDED).withSbom().withGzipCheck().verify();
+
+        List<CheckResult> sbomResults = results.stream().filter(r -> r.category() == CheckCategory.SBOM).toList();
+        assertEquals(2, sbomResults.size(), results.toString());
+        assertTrue(sbomResults.stream().noneMatch(CheckResult::passed), results.toString());
+        assertTrue(sbomResults.get(0).issues().get(0).startsWith("SBOM not found: "), results.toString());
+    }
+
+    @Test
+    void aBootableJarChecksThatItsSbomIsGzipped(@TempDir Path bootableRoot) throws IOException {
+        Path sbomDir = Files.createDirectories(bootableRoot.resolve("META-INF").resolve("sbom"));
+        Files.write(sbomDir.resolve("sbom.cdx.json.gz"), gzip(PLAIN_BOM));
+
+        assertAllPassed(new BootableJarSbomVerifier(bootableRoot, Path.of("META-INF/sbom/sbom.cdx.json.gz"))
+                .withSbom().withGzipCheck().verify());
+    }
+
+    @Test
+    void aBootableJarWithAPlainSbomCalledGzFails(@TempDir Path bootableRoot) throws IOException {
+        Path sbomDir = Files.createDirectories(bootableRoot.resolve("META-INF").resolve("sbom"));
+        Files.writeString(sbomDir.resolve("sbom.cdx.json.gz"), PLAIN_BOM);
+
+        List<CheckResult> results = new BootableJarSbomVerifier(bootableRoot, Path.of("META-INF/sbom/sbom.cdx.json.gz"))
+                .withSbom().withGzipCheck().verify();
+
+        assertEquals(1, gzipIssues(results).size(), results.toString());
+    }
+
     // ---- helpers ---------------------------------------------------------------
 
     /** A verifier of the community installation that skips only {@code .installation}. */
