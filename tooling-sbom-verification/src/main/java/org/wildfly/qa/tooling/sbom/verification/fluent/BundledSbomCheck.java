@@ -18,10 +18,14 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -55,96 +59,134 @@ final class BundledSbomCheck {
         if (bom.isEmpty()) {
             return CheckResults.unavailable(CheckCategory.BUNDLED_SBOM, "the SBOM");
         }
-        String purlPrefix = "pkg:maven/" + groupId + "/" + artifactId + "@";
-        List<Component> bundlers = ComponentTree.mavenComponents(bom.get().getComponents()).stream()
-                .filter(c -> c.purl().startsWith(purlPrefix))
-                .toList();
         List<String> issues = new ArrayList<>();
-        if (bundlers.isEmpty()) {
+        List<Component> mavenComponents = getMavenComponentsByGroupAndArtifactId(bom.get());
+        if (mavenComponents.isEmpty()) {
             issues.add(prefix() + "no such component in the SBOM");
         }
-        for (Component bundler : bundlers) {
-            checkBundler(bundler, issues);
-        }
+        mavenComponents.forEach(mavenComponent -> checkMavenComponent(mavenComponent, issues));
         return CheckResults.bundledSbom(issues);
     }
 
-    private void checkBundler(Component bundler, List<String> issues) {
-        List<String> locations = bundler.occurrenceLocations();
-        if (locations.isEmpty()) {
-            issues.add(prefix() + bundler.purl() + " [no location declared, so its JAR cannot be opened]");
+    /** @return the Maven components of the SBOM with the group and artifact id of this check */
+    private List<Component> getMavenComponentsByGroupAndArtifactId(Bom bom) {
+        String purlPrefix = "pkg:maven/" + groupId + "/" + artifactId + "@";
+        return ComponentTree.mavenComponents(bom.getComponents()).stream()
+                .filter(component -> component.purl().startsWith(purlPrefix))
+                .toList();
+    }
+
+    /** Compares the components nested under the Maven component with the SBOM embedded in each of its JARs. */
+    private void checkMavenComponent(Component mavenComponent, List<String> issues) {
+        if (reportIfMavenComponentHasNoJarLocations(mavenComponent, issues)) {
             return;
         }
-        List<Component> declared = ComponentTree.all(bundler.model().getComponents()).toList();
-        for (String location : locations) {
-            Path jar = context.root().resolve(location);
-            Optional<Bom> embedded = readEmbedded(jar, location, issues);
-            if (embedded.isEmpty()) {
+        List<Component> nestedComponents = ComponentTree.all(mavenComponent.model().getComponents()).toList();
+        for (String jarLocation : mavenComponent.occurrenceLocations()) {
+            Optional<Bom> embeddedBom = readEmbeddedSbomFromJar(context.root().resolve(jarLocation), jarLocation, issues);
+            if (embeddedBom.isEmpty()) {
                 continue;
             }
-            List<Component> inJar = ComponentTree.all(embedded.get().getComponents()).toList();
-            compare(bundler, location, declared, inJar, issues);
-            reject(declared, "in the SBOM", issues);
-            reject(inJar, "in " + embeddedSbomPath, issues);
+            List<Component> embeddedComponents = ComponentTree.all(embeddedBom.get().getComponents()).toList();
+            reportIfComponentIsMissingInEmbeddedSbom(mavenComponent, jarLocation, nestedComponents, embeddedComponents, issues);
+            reportIfComponentUnexpectedInEmbeddedSbom(mavenComponent, jarLocation, nestedComponents, embeddedComponents, issues);
+            reportIfComponentFailsPredicateCheck(
+                    Stream.concat(nestedComponents.stream(), embeddedComponents.stream()).toList(), issues);
         }
     }
 
-    /** One to one: a purl declared twice needs two components in the embedded SBOM, and the other way round. */
-    private void compare(Component bundler, String location, List<Component> declared, List<Component> inJar,
-                         List<String> issues) {
-        List<String> notYetMatched = inJar.stream()
-                .map(Component::purl)
-                .filter(purl -> purl != null)
-                .collect(Collectors.toCollection(ArrayList::new));
-        for (Component component : declared) {
-            if (component.purl() != null && !notYetMatched.remove(component.purl())) {
-                issues.add(prefix() + component.purl() + " [declared under " + bundler.purl()
-                        + ", missing from " + embeddedSbomPath + " of " + location + "]");
-            }
+    /** @return {@code true} after reporting it, when the SBOM declares no location, so no JAR can be opened */
+    private boolean reportIfMavenComponentHasNoJarLocations(Component mavenComponent, List<String> issues) {
+        if (mavenComponent.occurrenceLocations().isEmpty()) {
+            issues.add(prefix() + mavenComponent.purl() + " [no location declared, so its JAR cannot be opened]");
+            return true;
         }
-        for (String purl : notYetMatched) {
-            issues.add(prefix() + purl + " [in " + embeddedSbomPath + " of " + location
-                    + ", not declared under " + bundler.purl() + "]");
-        }
+        return false;
     }
 
-    private void reject(List<Component> components, String where, List<String> issues) {
-        for (Component component : components) {
-            boolean accepted;
-            try {
-                accepted = componentCheck.test(component);
-            } catch (RuntimeException e) {
-                issues.add(prefix() + purlOf(component) + " [" + errorMessage + " (the check threw "
-                        + e.getClass().getSimpleName() + ") " + where + "]");
-                continue;
-            }
-            if (!accepted) {
-                issues.add(prefix() + purlOf(component) + " [" + errorMessage + " " + where + "]");
-            }
-        }
-    }
-
-    /** @return the embedded SBOM, or empty after adding the reason to {@code issues} */
-    private Optional<Bom> readEmbedded(Path jar, String location, List<String> issues) {
-        if (!Files.isRegularFile(jar)) {
-            issues.add(prefix() + location + " [JAR not found, so " + embeddedSbomPath + " cannot be read]");
+    /**
+     * Loads the SBOM embedded in a JAR. Reports why it cannot be loaded and returns empty; it does not look
+     * at what the SBOM contains.
+     */
+    private Optional<Bom> readEmbeddedSbomFromJar(Path jarPath, String jarLocation, List<String> issues) {
+        if (!Files.isRegularFile(jarPath)) {
+            issues.add(prefix() + jarLocation + " [JAR not found, so " + embeddedSbomPath + " cannot be read]");
             return Optional.empty();
         }
-        try (ZipFile zip = new ZipFile(jar.toFile())) {
-            ZipEntry entry = zip.getEntry(embeddedSbomPath);
-            if (entry == null) {
-                issues.add(prefix() + location + " [no embedded SBOM at " + embeddedSbomPath + "]");
+        try (ZipFile jar = new ZipFile(jarPath.toFile())) {
+            ZipEntry sbomEntry = jar.getEntry(embeddedSbomPath);
+            if (sbomEntry == null) {
+                issues.add(prefix() + jarLocation + " [no embedded SBOM at " + embeddedSbomPath + "]");
                 return Optional.empty();
             }
-            try (InputStream raw = zip.getInputStream(entry);
-                 InputStream in = embeddedSbomPath.endsWith(".gz") ? new GZIPInputStream(raw) : raw) {
-                return Optional.of(new JsonParser().parse(in.readAllBytes()));
+            try (InputStream entryStream = jar.getInputStream(sbomEntry);
+                 InputStream sbomStream = embeddedSbomPath.endsWith(".gz")
+                         ? new GZIPInputStream(entryStream) : entryStream) {
+                return Optional.of(new JsonParser().parse(sbomStream.readAllBytes()));
             }
         } catch (IOException | org.cyclonedx.exception.ParseException | RuntimeException e) {
-            issues.add(prefix() + location + " [" + embeddedSbomPath + " cannot be read: "
+            issues.add(prefix() + jarLocation + " [" + embeddedSbomPath + " cannot be read: "
                     + e.getClass().getSimpleName() + "]");
             return Optional.empty();
         }
+    }
+
+    /** Reports each component nested under the Maven component that the embedded SBOM lacks, one to one by purl. */
+    private void reportIfComponentIsMissingInEmbeddedSbom(Component mavenComponent, String jarLocation,
+                                                        List<Component> nestedComponents,
+                                                        List<Component> embeddedComponents,
+                                                        List<String> issues) {
+        for (String purl : purlsMissingFrom(nestedComponents, embeddedComponents)) {
+            issues.add(prefix() + purl + " [declared under " + mavenComponent.purl()
+                    + ", missing from " + embeddedSbomPath + " of " + jarLocation + "]");
+        }
+    }
+
+    /** Reports each component of the embedded SBOM that is not nested under the Maven component, one to one by purl. */
+    private void reportIfComponentUnexpectedInEmbeddedSbom(Component mavenComponent, String jarLocation,
+                                                           List<Component> nestedComponents,
+                                                           List<Component> embeddedComponents,
+                                                           List<String> issues) {
+        for (String purl : purlsMissingFrom(embeddedComponents, nestedComponents)) {
+            issues.add(prefix() + purl + " [in " + embeddedSbomPath + " of " + jarLocation
+                    + ", not declared under " + mavenComponent.purl() + "]");
+        }
+    }
+
+    /**
+     * Reports each component for which the caller's condition does not hold, or throws. The same line is
+     * reported once, so a component that fails in both SBOMs is not listed twice.
+     */
+    private void reportIfComponentFailsPredicateCheck(List<Component> components, List<String> issues) {
+        Set<String> failures = new LinkedHashSet<>();
+        for (Component component : components) {
+            try {
+                if (!componentCheck.test(component)) {
+                    failures.add(prefix() + purlOf(component) + " [" + errorMessage + "]");
+                }
+            } catch (RuntimeException e) {
+                failures.add(prefix() + purlOf(component) + " [" + errorMessage + " (the check threw "
+                        + e.getClass().getSimpleName() + ")]");
+            }
+        }
+        issues.addAll(failures);
+    }
+
+    /**
+     * The purls of {@code components} that {@code otherComponents} does not account for. One to one: a purl
+     * that occurs twice in {@code components} needs two in {@code otherComponents}. Components without a purl
+     * are ignored.
+     */
+    private static List<String> purlsMissingFrom(List<Component> components, List<Component> otherComponents) {
+        List<String> unmatchedPurls = otherComponents.stream()
+                .map(Component::purl)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(ArrayList::new));
+        return components.stream()
+                .map(Component::purl)
+                .filter(Objects::nonNull)
+                .filter(purl -> !unmatchedPurls.remove(purl))
+                .toList();
     }
 
     private static String purlOf(Component component) {

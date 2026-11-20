@@ -656,6 +656,7 @@ class SbomVerifierIT {
 
     private static final String HAL_JAR = "hal-console-3.7.22.Final-resources.jar";
     private static final String NPM_BOM = "META-INF/sbom/npm-bom.cdx.json";
+    private static final String HAL_PURL = "pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources";
 
     /** What a test suite decides, not the tooling: {@code pkg:npm/<module name>@<version>}, a scope encoded as {@code %40}. */
     private static final Pattern NPM_PURL =
@@ -679,7 +680,7 @@ class SbomVerifierIT {
     private static String topLevelBom(String... nestedPurls) {
         return "{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.6\",\"version\":1,\"components\":["
                 + "{\"type\":\"library\",\"group\":\"org.jboss.hal\",\"name\":\"hal-console\",\"version\":\"3.7.22.Final\","
-                + "\"purl\":\"pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources\","
+                + "\"purl\":\"" + HAL_PURL + "\","
                 + "\"evidence\":{\"occurrences\":[{\"location\":\"" + HAL_JAR + "\"}]},"
                 + "\"components\":[" + components(nestedPurls) + "]}]}";
     }
@@ -752,7 +753,7 @@ class SbomVerifierIT {
                 topLevelBom("pkg:npm/lodash@4.17.21", "pkg:npm/extra@1.0.0"), bom("pkg:npm/lodash@4.17.21")));
 
         assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/extra@1.0.0 [declared under "
-                + "pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources, missing from "
+                + HAL_PURL + ", missing from "
                 + NPM_BOM + " of " + HAL_JAR + "]"), failed.issues());
     }
 
@@ -762,7 +763,7 @@ class SbomVerifierIT {
                 topLevelBom("pkg:npm/lodash@4.17.21"), bom("pkg:npm/lodash@4.17.21", "pkg:npm/extra@1.0.0")));
 
         assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/extra@1.0.0 [in " + NPM_BOM + " of " + HAL_JAR
-                + ", not declared under pkg:maven/org.jboss.hal/hal-console@3.7.22.Final?classifier=resources]"),
+                + ", not declared under " + HAL_PURL + "]"),
                 failed.issues());
     }
 
@@ -771,7 +772,12 @@ class SbomVerifierIT {
         CheckResult failed = bundledSbomFailure(verifyHal(root,
                 topLevelBom("pkg:npm/lodash@4.17.21"), bom("pkg:npm/lodash@4.17.20")));
 
-        assertEquals(2, failed.issues().size(), failed.toString());
+        assertEquals(List.of(
+                "[org.jboss.hal:hal-console] pkg:npm/lodash@4.17.21 [declared under " + HAL_PURL
+                        + ", missing from " + NPM_BOM + " of " + HAL_JAR + "]",
+                "[org.jboss.hal:hal-console] pkg:npm/lodash@4.17.20 [in " + NPM_BOM + " of " + HAL_JAR
+                        + ", not declared under " + HAL_PURL + "]"),
+                failed.issues());
     }
 
     @Test
@@ -785,8 +791,8 @@ class SbomVerifierIT {
         CheckResult failed = bundledSbomFailure(verifyHal(root,
                 topLevelBom("pkg:npm/a@1", "pkg:npm/a@1"), bom("pkg:npm/a@1")));
 
-        assertEquals(1, failed.issues().size(), failed.toString());
-        assertTrue(failed.issues().get(0).contains("pkg:npm/a@1 [declared under"), failed.toString());
+        assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/a@1 [declared under " + HAL_PURL
+                + ", missing from " + NPM_BOM + " of " + HAL_JAR + "]"), failed.issues());
     }
 
     @Test
@@ -835,13 +841,11 @@ class SbomVerifierIT {
     }
 
     @Test
-    void aComponentThatFailsTheConditionIsReportedForBothSboms(@TempDir Path root) throws IOException {
+    void aComponentThatFailsTheConditionIsReportedOnce(@TempDir Path root) throws IOException {
         CheckResult failed = bundledSbomFailure(verifyHal(root,
                 topLevelBom("pkg:npm/lodash"), bom("pkg:npm/lodash")));
 
-        assertEquals(List.of(
-                "[org.jboss.hal:hal-console] pkg:npm/lodash [" + NPM_PURL_MESSAGE + " in the SBOM]",
-                "[org.jboss.hal:hal-console] pkg:npm/lodash [" + NPM_PURL_MESSAGE + " in " + NPM_BOM + "]"),
+        assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/lodash [" + NPM_PURL_MESSAGE + "]"),
                 failed.issues());
     }
 
@@ -858,8 +862,8 @@ class SbomVerifierIT {
                 .withoutManifest().withDiskChecks()
                 .verify();
 
-        assertEquals(2, issuesOf(results, CheckCategory.BUNDLED_SBOM).size());
-        assertTrue(issuesOf(results, CheckCategory.BUNDLED_SBOM).get(0).contains("(the check threw IllegalStateException)"));
+        assertEquals(List.of("[org.jboss.hal:hal-console] pkg:npm/a@1 [check failed (the check threw IllegalStateException)]"),
+                issuesOf(results, CheckCategory.BUNDLED_SBOM));
     }
 
     /** A bootable JAR: the SBOM is in META-INF/sbom, and a declared location is relative to that directory. */
@@ -882,7 +886,12 @@ class SbomVerifierIT {
     void aBootableJarReportsAnEmbeddedSbomThatDiffers(@TempDir Path bootableRoot) throws IOException {
         CheckResult failed = bundledSbomFailure(verifyBootableJar(bootableRoot, bom("pkg:npm/lodash@4.17.20")));
 
-        assertEquals(2, failed.issues().size(), failed.toString());
+        assertEquals(List.of(
+                "[org.jboss.hal:hal-console] pkg:npm/lodash@4.17.21 [declared under " + HAL_PURL
+                        + ", missing from " + NPM_BOM + " of " + HAL_JAR + "]",
+                "[org.jboss.hal:hal-console] pkg:npm/lodash@4.17.20 [in " + NPM_BOM + " of " + HAL_JAR
+                        + ", not declared under " + HAL_PURL + "]"),
+                failed.issues());
     }
 
     // ---- gzip ----------------------------------------------------------------
