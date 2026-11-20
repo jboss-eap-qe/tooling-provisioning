@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.wildfly.qa.tooling.sbom.result.CheckCategory.BUNDLED_SBOM;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.DISK_VS_SBOM;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.INSTALLED_JARS;
 import static org.wildfly.qa.tooling.sbom.result.CheckCategory.MANIFEST;
@@ -61,6 +62,14 @@ public final class CheckResults {
         issues.add(sbomFile + " does not conform to the CycloneDX schema: " + errors.size() + " errors");
         errors.forEach(error -> issues.add(error.getMessage()));
         return new CheckResult(SBOM, issues);
+    }
+
+    /**
+     * @return a failed {@link CheckCategory#SBOM} result: the SBOM file is not a complete, intact gzip
+     *         stream, whatever its name says.
+     */
+    public static CheckResult sbomNotGzip(Path sbomFile, String cause) {
+        return new CheckResult(SBOM, List.of(sbomFile + " is not a valid gzip file: " + cause));
     }
 
     /**
@@ -148,6 +157,14 @@ public final class CheckResults {
      */
     public static CheckResult shadedCheckFailed(String message) {
         return new CheckResult(SHADED, List.of(message));
+    }
+
+    /**
+     * @return a {@link CheckCategory#BUNDLED_SBOM} result with one issue per problem found with an embedded
+     *         SBOM; passed when the list is empty
+     */
+    public static CheckResult bundledSbom(List<String> issues) {
+        return new CheckResult(BUNDLED_SBOM, issues);
     }
 
     /**
