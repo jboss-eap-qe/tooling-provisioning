@@ -5,6 +5,7 @@
 package org.wildfly.qa.tooling.sbom.verification.fluent;
 
 import org.cyclonedx.model.Bom;
+import org.wildfly.qa.tooling.sbom.component.Component;
 import org.wildfly.qa.tooling.sbom.result.CheckResult;
 import org.wildfly.qa.tooling.sbom.verification.BootableJarSbomVerifier;
 import org.wildfly.qa.tooling.sbom.verification.SbomVerifier;
@@ -40,6 +41,19 @@ public final class BootableJarWithSbom {
     }
 
     /**
+     * Adds a check of an SBOM that a JAR embeds against the SBOM of the bootable JAR; see
+     * {@link WithSbom#withBundledSbomCheck}. It applies to the SBOM of the bootable JAR, not to that of the
+     * extracted WildFly; ask for it on that stage.
+     *
+     * @return this stage
+     */
+    public BootableJarWithSbom withBundledSbomCheck(String groupId, String artifactId, String embeddedSbomPath,
+                                                    Predicate<Component> componentCheck, String errorMessage) {
+        sbom.withBundledSbomCheck(groupId, artifactId, embeddedSbomPath, componentCheck, errorMessage);
+        return this;
+    }
+
+    /**
      * Also requires the SBOM of the bootable JAR to conform to the CycloneDX schema; see
      * {@link WithSbom#withSchemaValidation()}. Off by default. It does not apply to the SBOM of the
      * extracted WildFly; ask for it on that stage.
@@ -48,6 +62,18 @@ public final class BootableJarWithSbom {
      */
     public BootableJarWithSbom withSchemaValidation() {
         sbom.withSchemaValidation();
+        return this;
+    }
+
+    /**
+     * Also requires the SBOM file of the bootable JAR to be a complete gzip stream; see
+     * {@link WithSbom#withGzipCheck()}. It does not apply to the SBOM of the extracted WildFly; ask for it on
+     * that stage.
+     *
+     * @return this stage
+     */
+    public BootableJarWithSbom withGzipCheck() {
+        sbom.withGzipCheck();
         return this;
     }
 
