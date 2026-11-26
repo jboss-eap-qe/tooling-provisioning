@@ -182,7 +182,7 @@ public final class WithDiskChecks {
                             ? Files.exists(root.resolve(fatJar))
                             : diskFileNames.get().contains(expected);
                     if (!found) {
-                        missing.add(c.purl() + " [expected: " + expected + "]");
+                        missing.add(c.purl() + " [JAR not found on disk, expected: " + expected + "]");
                     }
                     // a JAR that was not found is already reported; do not report its occurrence again
                     checkByComponentLocation(c, root, found ? null : Path.of(expected).getFileName().toString(), missing);
@@ -258,7 +258,7 @@ public final class WithDiskChecks {
         List<String> undeclared = scan.get().artifacts().stream()
                 .map(a -> root.relativize(Path.of(a.jarPath()).toAbsolutePath().normalize()))
                 .filter(path -> !declared.contains(path))
-                .map(Path::toString)
+                .map(path -> path + " [JAR found on disk, but not declared in the SBOM]")
                 .distinct()
                 .toList();
         return CheckResults.diskVsSbom(undeclared);

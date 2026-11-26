@@ -262,7 +262,7 @@ class SbomVerifierIT {
         CheckResult failed = onlyFailure(results);
         assertEquals(CheckCategory.SBOM_VS_DISK, failed.category());
         assertFalse(failed.issues().isEmpty(), failed.toString());
-        assertTrue(failed.issues().stream().allMatch(i -> i.contains("[expected: ")), failed.toString());
+        assertTrue(failed.issues().stream().allMatch(i -> i.contains("[JAR not found on disk, expected: ")), failed.toString());
     }
 
     @Test
@@ -323,7 +323,7 @@ class SbomVerifierIT {
 
         CheckResult failed = onlyFailure(results);
         assertEquals(CheckCategory.DISK_VS_SBOM, failed.category());
-        assertEquals(List.of("bin/client/jboss-client.jar"), failed.issues());
+        assertEquals(List.of("bin/client/jboss-client.jar" + UNDECLARED), failed.issues());
     }
 
     @Test
@@ -356,7 +356,7 @@ class SbomVerifierIT {
 
         CheckResult failed = onlyFailure(results);
         assertEquals(CheckCategory.DISK_VS_SBOM, failed.category());
-        assertEquals(List.of("elsewhere/jboss-client.jar"), failed.issues());
+        assertEquals(List.of("elsewhere/jboss-client.jar" + UNDECLARED), failed.issues());
     }
 
     /** A Maven component that is installed as {@code lib.jar} instead of {@code lib-1.jar}. */
@@ -386,7 +386,7 @@ class SbomVerifierIT {
                 .withSbom().withoutManifest().withDiskChecks()
                 .verify();
 
-        assertEquals(List.of("pkg:maven/org.example/lib@1 [expected: lib-1.jar]"),
+        assertEquals(List.of("pkg:maven/org.example/lib@1 [JAR not found on disk, expected: lib-1.jar]"),
                 issuesOf(results, CheckCategory.SBOM_VS_DISK));
         // the SBOM declares bin/lib.jar as a location, which is all the other direction needs
         assertEquals(List.of(), issuesOf(results, CheckCategory.DISK_VS_SBOM));
@@ -405,7 +405,7 @@ class SbomVerifierIT {
                 .verify();
 
         assertEquals(List.of(), issuesOf(results, CheckCategory.SBOM_VS_DISK));
-        assertEquals(List.of("elsewhere/lib.jar"), issuesOf(results, CheckCategory.DISK_VS_SBOM));
+        assertEquals(List.of("elsewhere/lib.jar" + UNDECLARED), issuesOf(results, CheckCategory.DISK_VS_SBOM));
     }
 
     @Test
@@ -423,7 +423,7 @@ class SbomVerifierIT {
                 .withSbom().withoutManifest().withDiskChecks()
                 .verify();
 
-        assertEquals(Set.of("one/lib-1.jar", "two/lib-1.jar"),
+        assertEquals(Set.of("one/lib-1.jar" + UNDECLARED, "two/lib-1.jar" + UNDECLARED),
                 Set.copyOf(issuesOf(results, CheckCategory.DISK_VS_SBOM)));
         assertEquals(2, issuesOf(results, CheckCategory.DISK_VS_SBOM).size());
     }
@@ -455,7 +455,7 @@ class SbomVerifierIT {
                 .verify());
 
         assertEquals(CheckCategory.DISK_VS_SBOM, failed.category());
-        assertEquals(List.of("elsewhere/lib-1.jar"), failed.issues());
+        assertEquals(List.of("elsewhere/lib-1.jar" + UNDECLARED), failed.issues());
     }
 
     // ---- every occurrence of a Maven component -----------------------------------
@@ -498,7 +498,7 @@ class SbomVerifierIT {
 
         assertEquals(List.of("pkg:maven/org.example/lib@1 [file missing: other/lib-1.jar]"),
                 issuesOf(results, CheckCategory.SBOM_VS_DISK));
-        assertEquals(List.of("modules/lib-1.jar"), issuesOf(results, CheckCategory.DISK_VS_SBOM));
+        assertEquals(List.of("modules/lib-1.jar" + UNDECLARED), issuesOf(results, CheckCategory.DISK_VS_SBOM));
     }
 
     @Test
@@ -510,7 +510,7 @@ class SbomVerifierIT {
         assertTrue(issues.get(0).startsWith("pkg:maven/org.example/lib@1 [no location declared"),
                 results.toString());
         // it declares no location, so the JAR on disk is not declared either
-        assertEquals(List.of("modules/lib-1.jar"), issuesOf(results, CheckCategory.DISK_VS_SBOM));
+        assertEquals(List.of("modules/lib-1.jar" + UNDECLARED), issuesOf(results, CheckCategory.DISK_VS_SBOM));
     }
 
     @Test
@@ -523,7 +523,7 @@ class SbomVerifierIT {
                 .withSbom().withoutManifest().withDiskChecks()
                 .verify());
 
-        assertEquals(List.of("pkg:maven/org.example/lib@1 [expected: lib-1.jar]"), failed.issues());
+        assertEquals(List.of("pkg:maven/org.example/lib@1 [JAR not found on disk, expected: lib-1.jar]"), failed.issues());
     }
 
     @Test
@@ -653,6 +653,8 @@ class SbomVerifierIT {
     }
 
     // ---- SBOM embedded in a JAR ------------------------------------------------------
+
+    private static final String UNDECLARED = " [JAR found on disk, but not declared in the SBOM]";
 
     private static final String HAL_JAR = "hal-console-3.7.22.Final-resources.jar";
     private static final String NPM_BOM = "META-INF/sbom/npm-bom.cdx.json";

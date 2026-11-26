@@ -136,10 +136,10 @@ public final class WithManifest {
             Optional<String> manifestVersion = manifest.get().findStreamFor(c.group(), c.name())
                     .map(org.wildfly.channel.Stream::getVersion);
             if (manifestVersion.isEmpty()) {
-                issues.add("NOT IN MANIFEST " + coordinates + " (sbom: " + c.version() + ")");
+                issues.add("NOT IN MANIFEST " + coordinates + " (SBOM: " + c.version() + ")");
             } else if (!manifestVersion.get().equals(c.version())) {
                 issues.add("VERSION MISMATCH " + coordinates
-                        + " sbom=" + c.version() + " manifest=" + manifestVersion.get());
+                        + " SBOM=" + c.version() + " MANIFEST=" + manifestVersion.get());
             }
         }
         return CheckResults.sbomVsManifest(issues);
